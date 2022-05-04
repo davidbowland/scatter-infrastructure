@@ -1,0 +1,36 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: >-
+  Infrastructure for dbowland.com scatter project
+
+Parameters:
+  Environment:
+    Type: String
+    Default: prod
+    AllowedValues:
+      - prod
+      - test
+    Description: Environment for deploy
+
+Mappings:
+  EnvironmentMap:
+    prod:
+      project: scatter
+    test:
+      project: scatter-test
+
+Resources:
+  # Analytics
+
+  Pinpoint:
+    Type: AWS::Pinpoint::App
+    Properties:
+      Name: !FindInMap [EnvironmentMap, !Ref Environment, project]
+      Tags:
+        'created-by': 'scatter-infrastructure'
+        'created-for': 'scatter'
+        'environment': !Ref Environment
+
+Outputs:
+  PinpointId:
+    Description: Application ID for Pinpoint analytics
+    Value: !Ref Pinpoint

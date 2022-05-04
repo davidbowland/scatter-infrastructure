@@ -1,0 +1,395 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: >-
+  Infrastructure for dbowland.com scatter project
+
+Parameters:
+  Environment:
+    Type: String
+    Default: prod
+    AllowedValues:
+      - prod
+      - test
+    Description: Environment for deploy
+  PinpointId:
+    Type: String
+    Description: Application ID for analytics
+
+Mappings:
+  EnvironmentMap:
+    prod:
+      certificate: adce1a21-90b4-4120-8548-111215e582f0
+      domain: dbowland.com
+      lambdaBucketName: scatter-lambda
+      project: scatter
+      roleNameCloudFormation: scatter-cloudformation
+      roleNamePipeline: scatter-pipeline
+    test:
+      certificate: 6a48cba7-feb9-4de5-8cbf-d383140fcdef
+      domain: bowland.link
+      lambdaBucketName: scatter-lambda-test
+      project: scatter-test
+      roleNameCloudFormation: scatter-cloudformation-test
+      roleNamePipeline: scatter-pipeline-test
+
+Resources:
+  # Authentication
+
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      AccountRecoverySetting:
+        RecoveryMechanisms:
+          - Name: verified_phone_number
+            Priority: 1
+      AutoVerifiedAttributes:
+        - phone_number
+      DeviceConfiguration:
+        DeviceOnlyRememberedOnUserPrompt: true
+      MfaConfiguration: 'OFF'
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 12
+          RequireLowercase: false
+          RequireNumbers: false
+          RequireSymbols: false
+          RequireUppercase: false
+          TemporaryPasswordValidityDays: 14
+      Schema:
+        - Mutable: true
+          Name: name
+          Required: true
+      SmsAuthenticationMessage: Your authentication code is {####}.
+      SmsConfiguration:
+        SnsCallerArn: !Sub '${CognitoSmsRole.Arn}'
+      SmsVerificationMessage: Your verification code is {####}.
+      UsernameAttributes:
+        - phone_number
+      UsernameConfiguration:
+        CaseSensitive: false
+      UserPoolName: !FindInMap [EnvironmentMap, !Ref Environment, project]
+      UserPoolTags:
+        'created-by': 'scatter-infrastructure'
+        'created-for': !FindInMap [EnvironmentMap, !Ref Environment, project]
+        'environment': !Ref Environment
+
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      AccessTokenValidity: 1 # Hours
+      AllowedOAuthFlows:
+        - implicit
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthScopes:
+        - phone
+        - openid
+        - aws.cognito.signin.user.admin
+      CallbackURLs:
+        - !Sub
+          - 'https://scatter.${Domain}'
+          - Domain: !FindInMap [EnvironmentMap, !Ref Environment, domain]
+      IdTokenValidity: 1 # Hours
+      LogoutURLs:
+        - !Sub
+          - 'https://scatter.${Domain}'
+          - Domain: !FindInMap [EnvironmentMap, !Ref Environment, domain]
+      PreventUserExistenceErrors: ENABLED
+      RefreshTokenValidity: 30 # Days
+      SupportedIdentityProviders:
+        - COGNITO
+      UserPoolId: !Ref UserPool
+
+  # Authorization
+
+  IdentityPool:
+    Type: AWS::Cognito::IdentityPool
+    Properties:
+      AllowClassicFlow: false
+      AllowUnauthenticatedIdentities: true
+      CognitoIdentityProviders:
+        - ClientId: !Ref UserPoolClient
+          ProviderName: !Sub '${UserPool.ProviderName}'
+      IdentityPoolName: !FindInMap [EnvironmentMap, !Ref Environment, project]
+
+  IdentityPoolRoleAttachment:
+    Type: AWS::Cognito::IdentityPoolRoleAttachment
+    Properties:
+      IdentityPoolId: !Ref IdentityPool
+      Roles:
+        'authenticated': !Sub '${AuthenticatedRole.Arn}'
+        'unauthenticated': !Sub '${UnauthenticatedRole.Arn}'
+
+  AuthenticatedRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated:
+                - cognito-identity.amazonaws.com
+            Action:
+              - 'sts:AssumeRoleWithWebIdentity'
+            Condition:
+              StringEquals:
+                cognito-identity.amazonaws.com:aud:
+                  - !Ref IdentityPool
+              ForAnyValue:StringLike:
+                cognito-identity.amazonaws.com:amr:
+                  - authenticated
+      PermissionsBoundary: !Sub 'arn:aws:iam::${AWS::AccountId}:policy/root-boundary'
+      Policies:
+        - PolicyName: !Sub
+            - '${Project}-authenticated'
+            - Project: !FindInMap [EnvironmentMap, !Ref Environment, project]
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'mobiletargeting:GetEndpoint'
+                  - 'mobiletargeting:PutEvents'
+                  - 'mobiletargeting:UpdateEndpoint'
+                Resource: !Sub 'arn:aws:mobiletargeting:us-east-1:${AWS::AccountId}:apps/${PinpointId}/*'
+              - Effect: Allow
+                Action: 'mobileanalytics:PutEvents'
+                Resource: '*'
+      Tags:
+        - Key: 'created-by'
+          Value: 'scatter-infrastructure'
+        - Key: 'created-for'
+          Value: !FindInMap [EnvironmentMap, !Ref Environment, project]
+        - Key: 'environment'
+          Value: !Ref Environment
+
+  UnauthenticatedRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated:
+                - cognito-identity.amazonaws.com
+            Action:
+              - 'sts:AssumeRoleWithWebIdentity'
+            Condition:
+              StringEquals:
+                cognito-identity.amazonaws.com:aud:
+                  - !Ref IdentityPool
+              ForAnyValue:StringLike:
+                cognito-identity.amazonaws.com:amr:
+                  - unauthenticated
+      PermissionsBoundary: !Sub 'arn:aws:iam::${AWS::AccountId}:policy/root-boundary'
+      Policies:
+        - PolicyName: !Sub
+            - '${Project}-unauthenticated'
+            - Project: !FindInMap [EnvironmentMap, !Ref Environment, project]
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'mobiletargeting:GetEndpoint'
+                  - 'mobiletargeting:PutEvents'
+                  - 'mobiletargeting:UpdateEndpoint'
+                Resource: !Sub 'arn:aws:mobiletargeting:us-east-1:${AWS::AccountId}:apps/${PinpointId}/*'
+              - Effect: Allow
+                Action: 'mobileanalytics:PutEvents'
+                Resource: '*'
+      Tags:
+        - Key: 'created-by'
+          Value: 'scatter-infrastructure'
+        - Key: 'created-for'
+          Value: !FindInMap [EnvironmentMap, !Ref Environment, project]
+        - Key: 'environment'
+          Value: !Ref Environment
+
+  # Deployment storage
+
+  LambdaBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      AccessControl: Private
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - BucketKeyEnabled: false
+            ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      BucketName: !FindInMap [EnvironmentMap, !Ref Environment, lambdaBucketName]
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: 'created-by'
+          Value: 'scatter-infrastructure'
+        - Key: 'created-for'
+          Value: !FindInMap [EnvironmentMap, !Ref Environment, project]
+        - Key: 'environment'
+          Value: !Ref Environment
+
+  # Deployment roles
+
+  CognitoSmsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - cognito-idp.amazonaws.com
+            Action: 'sts:AssumeRole'
+      PermissionsBoundary: !Sub 'arn:aws:iam::${AWS::AccountId}:policy/root-boundary'
+      Policies:
+        - PolicyName: !Sub
+            - '${Project}-cognito'
+            - Project: !FindInMap [EnvironmentMap, !Ref Environment, project]
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: 'sns:publish'
+                Resource: '*'
+      Tags:
+        - Key: 'created-by'
+          Value: 'scatter-infrastructure'
+        - Key: 'created-for'
+          Value: !FindInMap [EnvironmentMap, !Ref Environment, project]
+        - Key: 'environment'
+          Value: !Ref Environment
+
+  CloudFormationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - cloudformation.amazonaws.com
+            Action: 'sts:AssumeRole'
+      PermissionsBoundary: !Sub 'arn:aws:iam::${AWS::AccountId}:policy/root-boundary'
+      Policies:
+        - PolicyName: !Sub
+            - '${Project}-cloudformation'
+            - Project: !FindInMap [EnvironmentMap, !Ref Environment, project]
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                NotAction:
+                  - 'iam:*User'
+                  - 'organizations:*'
+                  - 'account:*'
+                Resource: '*'
+      RoleName: !FindInMap [EnvironmentMap, !Ref Environment, roleNameCloudFormation]
+      Tags:
+        - Key: 'created-by'
+          Value: 'scatter-infrastructure'
+        - Key: 'created-for'
+          Value: !FindInMap [EnvironmentMap, !Ref Environment, project]
+        - Key: 'environment'
+          Value: !Ref Environment
+
+  PipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Sub '${AWS::AccountId}'
+            Action: 'sts:AssumeRole'
+      PermissionsBoundary: !Sub 'arn:aws:iam::${AWS::AccountId}:policy/root-boundary'
+      Policies:
+        - PolicyName: !Sub
+            - '${Project}-pipeline'
+            - Project: !FindInMap [EnvironmentMap, !Ref Environment, project]
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: 'iam:PassRole'
+                Resource: !Sub '${CloudFormationRole.Arn}'
+              - Effect: Allow
+                Action: 'cloudformation:*'
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - 's3:DeleteObject'
+                  - 's3:GetObject*'
+                  - 's3:PutObject*'
+                  - 's3:GetBucket*'
+                  - 's3:List*'
+                Resource:
+                  - 'arn:aws:s3:::scatter-ui-source/*'
+                  - 'arn:aws:s3:::scatter-ui-source'
+                  - 'arn:aws:s3:::scatter-ui-test/*'
+                  - 'arn:aws:s3:::scatter-ui-test'
+                  - !Sub 'arn:aws:s3:::${LambdaBucket}/*'
+                  - !Sub 'arn:aws:s3:::${LambdaBucket}'
+      RoleName: !FindInMap [EnvironmentMap, !Ref Environment, roleNamePipeline]
+      Tags:
+        - Key: 'created-by'
+          Value: 'scatter-infrastructure'
+        - Key: 'created-for'
+          Value: !FindInMap [EnvironmentMap, !Ref Environment, project]
+        - Key: 'environment'
+          Value: !Ref Environment
+
+  # Deployment users
+
+  SessionApiUser:
+    Type: AWS::IAM::User
+    Properties:
+      PermissionsBoundary: !Sub 'arn:aws:iam::${AWS::AccountId}:policy/root-boundary'
+      Policies:
+        - PolicyName: !Sub
+            - '${Project}-pipeline'
+            - Project: !FindInMap [EnvironmentMap, !Ref Environment, project]
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: 'sts:AssumeRole'
+                Resource:
+                  - !Sub 'arn:aws:iam::${AWS::AccountId}:role/scatter-pipeline'
+                  - !Sub 'arn:aws:iam::${AWS::AccountId}:role/scatter-pipeline-test'
+      Tags:
+        - Key: 'created-by'
+          Value: 'scatter-infrastructure'
+        - Key: 'created-for'
+          Value: !FindInMap [EnvironmentMap, !Ref Environment, project]
+        - Key: 'environment'
+          Value: !Ref Environment
+
+  UiUser:
+    Type: AWS::IAM::User
+    Properties:
+      PermissionsBoundary: !Sub 'arn:aws:iam::${AWS::AccountId}:policy/root-boundary'
+      Policies:
+        - PolicyName: !Sub
+            - '${Project}-pipeline'
+            - Project: !FindInMap [EnvironmentMap, !Ref Environment, project]
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: 'sts:AssumeRole'
+                Resource:
+                  - !Sub 'arn:aws:iam::${AWS::AccountId}:role/scatter-pipeline'
+                  - !Sub 'arn:aws:iam::${AWS::AccountId}:role/scatter-pipeline-test'
+      Tags:
+        - Key: 'created-by'
+          Value: 'scatter-infrastructure'
+        - Key: 'created-for'
+          Value: !FindInMap [EnvironmentMap, !Ref Environment, project]
+        - Key: 'environment'
+          Value: !Ref Environment

@@ -1,0 +1,185 @@
+name: Pipeline
+
+on:
+  push:
+    branches:
+      - 'master'
+      - 'feature**'
+
+env:
+  EAST_1_TEMPLATE_NAME: template-east-1.yaml
+  TEMPLATE_NAME: template.yaml
+  TESTING_PIPELINE_EXECUTION_ROLE: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/full-access
+  TESTING_STACK_NAME: scatter-infrastructure-test
+  TESTING_EAST_1_STACK_NAME: scatter-infrastructure-east-1-test
+  PROD_PIPELINE_EXECUTION_ROLE: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/full-access
+  PROD_STACK_NAME: scatter-infrastructure
+  PROD_EAST_1_STACK_NAME: scatter-infrastructure-east-1
+
+jobs:
+  build-and-deploy-feature:
+    name: Deploy feature branch
+    if: startsWith(github.ref, 'refs/heads/feature')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout latest code
+        uses: actions/checkout@v2
+      - name: Install Python 2
+        uses: actions/setup-python@v2
+      - name: Install AWS SAM
+        uses: aws-actions/setup-sam@v1
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+          role-to-assume: ${{ env.TESTING_PIPELINE_EXECUTION_ROLE }}
+          role-session-name: feature-deployment
+          role-duration-seconds: 3600
+          role-skip-session-tagging: true
+      - name: Deploy test us-east-1 infrastructure
+        shell: bash
+        run: |
+          sam deploy --stack-name ${{ env.TESTING_EAST_1_STACK_NAME }} \
+            --template-file ${{ env.EAST_1_TEMPLATE_NAME }} \
+            --region us-east-1 \
+            --no-fail-on-empty-changeset \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --parameter-overrides 'Environment=test'
+      - name: Query deployed us-east-1 infrastructure
+        run: |
+          PINPOINT_ID=$(AWS_REGION=us-east-1 aws cloudformation describe-stacks --stack-name ${{ env.TESTING_EAST_1_STACK_NAME }} --output text --query 'Stacks[0].Outputs[?OutputKey==`PinpointId`].OutputValue')
+          echo "::set-output name=PINPOINT_ID::$PINPOINT_ID"
+        id: east-1-infrastructure
+      - name: Deploy test infrastructure
+        shell: bash
+        run: |
+          sam deploy --stack-name ${{ env.TESTING_STACK_NAME }} \
+            --template-file ${{ env.TEMPLATE_NAME }} \
+            --region ${{ secrets.AWS_REGION }} \
+            --no-fail-on-empty-changeset \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --parameter-overrides 'Environment=test PinpointId=${{ steps.east-1-infrastructure.outputs.PINPOINT_ID }}'
+
+  deploy-testing:
+    name: Deploy to test environment
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout latest code
+        uses: actions/checkout@v2
+      - name: Install Python 2
+        uses: actions/setup-python@v2
+      - name: Install AWS SAM
+        uses: aws-actions/setup-sam@v1
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+          role-to-assume: ${{ env.TESTING_PIPELINE_EXECUTION_ROLE }}
+          role-session-name: testing-deployment
+          role-duration-seconds: 3600
+          role-skip-session-tagging: true
+      - name: Deploy test us-east-1 infrastructure
+        shell: bash
+        run: |
+          sam deploy --stack-name ${{ env.TESTING_EAST_1_STACK_NAME }} \
+            --template-file ${{ env.EAST_1_TEMPLATE_NAME }} \
+            --region us-east-1 \
+            --no-fail-on-empty-changeset \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --parameter-overrides 'Environment=test'
+      - name: Query deployed us-east-1 infrastructure
+        run: |
+          PINPOINT_ID=$(AWS_REGION=us-east-1 aws cloudformation describe-stacks --stack-name ${{ env.TESTING_EAST_1_STACK_NAME }} --output text --query 'Stacks[0].Outputs[?OutputKey==`PinpointId`].OutputValue')
+          echo "::set-output name=PINPOINT_ID::$PINPOINT_ID"
+        id: east-1-infrastructure
+      - name: Deploy test infrastructure
+        shell: bash
+        run: |
+          sam deploy --stack-name ${{ env.TESTING_STACK_NAME }} \
+            --template-file ${{ env.TEMPLATE_NAME }} \
+            --region ${{ secrets.AWS_REGION }} \
+            --no-fail-on-empty-changeset \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --parameter-overrides 'Environment=test PinpointId=${{ steps.east-1-infrastructure.outputs.PINPOINT_ID }}'
+
+  deploy-production:
+    name: Deploy to production
+    if: github.ref == 'refs/heads/master'
+    needs: [deploy-testing]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout latest code
+        uses: actions/checkout@v2
+      - name: Install Python 2
+        uses: actions/setup-python@v2
+      - name: Install AWS SAM
+        uses: aws-actions/setup-sam@v1
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+          role-to-assume: ${{ env.PROD_PIPELINE_EXECUTION_ROLE }}
+          role-session-name: prod-deployment
+          role-duration-seconds: 3600
+          role-skip-session-tagging: true
+      - name: Deploy production us-east-1 infrastructure
+        shell: bash
+        run: |
+          sam deploy --stack-name ${{ env.PROD_EAST_1_STACK_NAME }} \
+            --template-file ${{ env.EAST_1_TEMPLATE_NAME }} \
+            --region us-east-1 \
+            --no-fail-on-empty-changeset \
+            --capabilities CAPABILITY_NAMED_IAM
+      - name: Query deployed us-east-1 infrastructure
+        run: |
+          PINPOINT_ID=$(AWS_REGION=us-east-1 aws cloudformation describe-stacks --stack-name ${{ env.PROD_EAST_1_STACK_NAME }} --output text --query 'Stacks[0].Outputs[?OutputKey==`PinpointId`].OutputValue')
+          echo "::set-output name=PINPOINT_ID::$PINPOINT_ID"
+        id: east-1-infrastructure
+      - name: Deploy production infrastructure
+        shell: bash
+        run: |
+          sam deploy --stack-name ${{ env.PROD_STACK_NAME }} \
+            --template-file ${{ env.TEMPLATE_NAME }} \
+            --region ${{ secrets.AWS_REGION }} \
+            --no-fail-on-empty-changeset \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --parameter-overrides 'PinpointId=${{ steps.east-1-infrastructure.outputs.PINPOINT_ID }}'
+
+  bump:
+    name: Bump the version number and tag the commit
+    needs: [deploy-production]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout latest code
+        uses: actions/checkout@v2
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Install Node 16
+        uses: actions/setup-node@v2
+        with:
+          node-version: 16.x
+      - name: Install NPM 8
+        run: npm install -g npm@8
+
+      - name: Set git name and email
+        run: |
+          git config --local user.email "dbowland1+bot@gmail.com"
+          git config --local user.name "github-actions[bot]"
+      - name: Bump the minor version
+        run: npm version minor
+      - name: Push tag created by version bump
+        uses: ad-m/github-push-action@master
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          branch: ${{ github.ref }}

@@ -1,0 +1,33 @@
+{
+  "name": "scatter-infrastructure",
+  "version": "1.0.0",
+  "description": "Infrastructure for scatter project",
+  "author": "David Bowland",
+  "engines": {
+    "node": "^16.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/davidbowland/scatter-infrastructure.git"
+  },
+  "bugs": {
+    "url": "https://github.com/davidbowland/scatter-infrastructure/issues"
+  },
+  "homepage": "https://github.com/davidbowland/scatter-infrastructure#readme",
+  "scripts": {
+    "deploy": "./deploy.sh",
+    "prepare": "if [ \"$NODE_ENV\" != \"production\" ]; then husky install ; fi",
+    "lint": "prettier --write ."
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "husky": "^6.0.0",
+    "lint-staged": "^11.0.0",
+    "prettier": "^2.3.0"
+  },
+  "lint-staged": {
+    "**/*": [
+      "prettier --write --ignore-unknown"
+    ]
+  }
+}
