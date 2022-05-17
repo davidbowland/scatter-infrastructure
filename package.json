@@ -1,6 +1,6 @@
 {
   "name": "scatter-infrastructure",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Infrastructure for scatter project",
   "author": "David Bowland",
   "engines": {
